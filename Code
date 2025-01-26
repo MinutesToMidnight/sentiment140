@@ -1,0 +1,47 @@
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, accuracy_score
+from sklearn.svm import SVC
+import string
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
+
+path_to_file = "D:/Python/Python Projects/PycharmProjects/training.1600000.processed.noemoticon.csv"
+df = pd.read_csv(path_to_file, names=["target", "id", "date", "flag", "user", "text"])
+
+df = pd.concat([df.head(1000), df.tail(1000)])
+df = df.drop(["flag", "id", "date", "user"], axis=1)
+df['text'] = df['text'].str.lower()
+df['text'] = df['text'].str.translate(str.maketrans('', '', string.punctuation))
+df['text'] = df['text'].str.replace(r'\d+', '', regex=True)
+df['text'] = df['text'].apply(lambda x: ' '.join([word for word in x.split() if word not in ENGLISH_STOP_WORDS]))
+df['target'] = df['target'].map({0: 0, 4: 1})
+
+vectorizer = CountVectorizer()
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('text', vectorizer, "text"),
+    ]
+)
+
+X, y = df.drop(columns=["target"]), df["target"]
+X = preprocessor.fit_transform(X)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, stratify=y, random_state=1)
+
+model = SVC()
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+print(f"Accuracy: {accuracy_score(y_test, y_pred)}")
+print(f"Recall: {recall_score(y_test, y_pred)}")
+print(f"Precision: {precision_score(y_test, y_pred)}")
+print(f"f1_score: {f1_score(y_test, y_pred)}")
+print(f"roc_auc_score: {roc_auc_score(y_test, y_pred)}")
+
+# Accuracy: 0.6883333333333334
+# Recall: 0.7066666666666667
+# Precision: 0.6816720257234726
+# f1_score: 0.6939443535188216
+# roc_auc_score: 0.6883333333333332

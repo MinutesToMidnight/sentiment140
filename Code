@@ -1,17 +1,27 @@
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, accuracy_score
+from sklearn.ensemble import ExtraTreesClassifier, AdaBoostClassifier
 from sklearn.svm import SVC
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from hyperopt import fmin, tpe, hp, Trials, space_eval
 import string
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+from sklearn.feature_selection import SelectKBest, chi2
+from sklearn.feature_extraction.text import TfidfVectorizer
+import warnings
 
 
+warnings.filterwarnings('ignore')
+
+
+# Предобработка данных
 path_to_file = "D:/Python/Python Projects/PycharmProjects/training.1600000.processed.noemoticon.csv"
-df = pd.read_csv(path_to_file, names=["target", "id", "date", "flag", "user", "text"])
+df = pd.read_csv(path_to_file, names=["target", "id", "date", "flag", "user", "text"], encoding="ISO-8859-1")
 
-df = pd.concat([df.head(1000), df.tail(1000)])
+# Предобработка данных
+df = pd.concat([df.head(10000), df.tail(10000)])
 df = df.drop(["flag", "id", "date", "user"], axis=1)
 df['text'] = df['text'].str.lower()
 df['text'] = df['text'].str.translate(str.maketrans('', '', string.punctuation))
@@ -19,29 +29,78 @@ df['text'] = df['text'].str.replace(r'\d+', '', regex=True)
 df['text'] = df['text'].apply(lambda x: ' '.join([word for word in x.split() if word not in ENGLISH_STOP_WORDS]))
 df['target'] = df['target'].map({0: 0, 4: 1})
 
-vectorizer = CountVectorizer()
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('text', vectorizer, "text"),
-    ]
-)
-
-X, y = df.drop(columns=["target"]), df["target"]
-X = preprocessor.fit_transform(X)
+vectorizer = TfidfVectorizer()
+X, y = df['text'], df['target']
+X = vectorizer.fit_transform(X)
+selector = SelectKBest(chi2, k=1300)
+X = selector.fit_transform(X, y)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, stratify=y, random_state=1)
 
-model = SVC()
-model.fit(X_train, y_train)
 
-y_pred = model.predict(X_test)
-print(f"Accuracy: {accuracy_score(y_test, y_pred)}")
-print(f"Recall: {recall_score(y_test, y_pred)}")
-print(f"Precision: {precision_score(y_test, y_pred)}")
-print(f"f1_score: {f1_score(y_test, y_pred)}")
-print(f"roc_auc_score: {roc_auc_score(y_test, y_pred)}")
+# Определение целевой функции
+def objective(params, model):
+    global X_train, X_test, y_train, y_test
+    model = model(**params)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    return -accuracy_score(y_test, y_pred)
 
-# Accuracy: 0.6883333333333334
-# Recall: 0.7066666666666667
-# Precision: 0.6816720257234726
-# f1_score: 0.6939443535188216
-# roc_auc_score: 0.6883333333333332
+
+# Определение пространства поиска
+space_extratrees = {
+    'n_estimators': hp.choice('n_estimators', range(1, 1000)),
+    'max_depth': hp.choice('max_depth', range(1, 100))
+}
+space_adaboost = {
+    'n_estimators': hp.choice('n_estimators', range(1, 1000)),
+    'learning_rate': hp.uniform('learning_rate', 0.01, 1.0)
+}
+space_svc = {
+    'C': hp.uniform('C', 0.1, 10),
+    'kernel': hp.choice('kernel', ['linear'])
+}
+space_xgboost = {
+    'n_estimators': hp.choice('n_estimators', [50, 100, 200]),
+    'max_depth': hp.choice('max_depth', range(3, 15)),
+    'learning_rate': hp.uniform('learning_rate', 0.01, 0.1),
+}
+space_lgb = {
+    'n_estimators': hp.choice('n_estimators', [50, 100, 200]),
+    'max_depth': hp.choice('max_depth', [3, 5, 7]),
+    'learning_rate': hp.uniform('learning_rate', 0.01, 0.1),
+    'min_data_in_bin': hp.choice('min_data_in_bin', range(1, 10)),
+    'feature_fraction': hp.uniform('feature_fraction', 0.5, 1.0),
+    'verbose': -1
+}
+
+spaces = {
+    'ExtraTrees': (ExtraTreesClassifier, space_extratrees),
+    'AdaBoost': (AdaBoostClassifier, space_adaboost),
+    'SVC': (SVC, space_svc),
+    'XGBoost': (XGBClassifier, space_xgboost),
+    'LightGBM': (LGBMClassifier, space_lgb)
+}
+
+# Запуск Hyperopt для каждой модели
+trials = {}
+best_params = {}
+
+for model_name, (model, space) in spaces.items():
+    trials[model_name] = Trials()
+    best_params[model_name] = fmin(fn=lambda params: objective(params, model), space=space,
+                                   algo=tpe.suggest, max_evals=200, trials=trials[model_name])
+
+    print(f"Лучшие параметры для {model_name}: {space_eval(spaces[model_name][1], best_params[model_name])}")
+print()
+
+for model_name in trials:
+    model = spaces[model_name][0](**space_eval(spaces[model_name][1], best_params[model_name]))
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    print(f"Model: {model_name}")
+    print(f"Accuracy: {accuracy_score(y_test, y_pred)}")
+    print(f"Recall: {recall_score(y_test, y_pred)}")
+    print(f"Precision: {precision_score(y_test, y_pred)}")
+    print(f"f1_score: {f1_score(y_test, y_pred)}")
+    print(f"roc_auc_score: {roc_auc_score(y_test, y_pred)}")
+    print()
